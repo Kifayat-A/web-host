@@ -1,0 +1,216 @@
+
+<style>
+.pxcell {
+  width:52px;height:52px;display:inline-flex;align-items:center;justify-content:center;
+  cursor:pointer;border:1px solid transparent;
+  transition:transform 0.15s,border-color 0.15s;box-sizing:border-box;flex-direction:column;gap:1px;
+}
+.pxcell:hover{transform:scale(1.13);z-index:10;border-color:rgba(255,255,255,0.7);}
+.pxcell.selected{border:2px solid #fff;transform:scale(1.16);z-index:20;}
+.pgrid{display:grid;grid-template-columns:repeat(10,52px);gap:1px;background:#555;border:1px solid #555;border-radius:4px;overflow:hidden;}
+.modebtn{padding:5px 11px;font-size:12px;border-radius:6px;border:0.5px solid var(--color-border-secondary);background:transparent;color:var(--color-text-primary);cursor:pointer;}
+.modebtn.on{background:var(--color-background-info);border-color:var(--color-border-info);color:var(--color-text-info);}
+.cv{font-size:9px;font-weight:500;line-height:1.2;text-align:center;}
+</style>
+
+<h2 class="sr-only">Interactive demosaicing animation for a 10x10 pixel frame showing all three R, G, B interpolated values per pixel.</h2>
+
+<div style="padding:0.75rem 0;">
+
+<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+  <button class="modebtn on" id="mb0" onclick="setMode(0)">Bayer RAW</button>
+  <button class="modebtn" id="mb1" onclick="setMode(1)">R channel</button>
+  <button class="modebtn" id="mb2" onclick="setMode(2)">G channel</button>
+  <button class="modebtn" id="mb3" onclick="setMode(3)">B channel</button>
+  <button class="modebtn" id="mb4" onclick="setMode(4)">Interpolated</button>
+  <button class="modebtn" id="mb5" onclick="setMode(5)">RGB result</button>
+  <button class="modebtn" id="mb6" onclick="startAnim()">▶ Animate</button>
+</div>
+
+<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;">
+  <div>
+    <div id="gridlabel" style="font-size:12px;color:var(--color-text-secondary);margin-bottom:5px;">Bayer RAW — one colour filter per pixel</div>
+    <div class="pgrid" id="maingrid"></div>
+    <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;" id="legend">
+      <span style="font-size:11px;padding:2px 8px;border-radius:12px;background:#b91c1c;color:#fff;">R filter</span>
+      <span style="font-size:11px;padding:2px 8px;border-radius:12px;background:#15803d;color:#fff;">G filter (x2)</span>
+      <span style="font-size:11px;padding:2px 8px;border-radius:12px;background:#1d4ed8;color:#fff;">B filter</span>
+    </div>
+    <div id="interp-legend" style="display:none;margin-top:8px;font-size:11px;color:var(--color-text-secondary);">
+      Each cell shows <span style="color:#ff6b6b;font-weight:500;">R</span> / <span style="color:#6bcb77;font-weight:500;">G</span> / <span style="color:#74b3f7;font-weight:500;">B</span> &nbsp;·&nbsp; bold = original &nbsp; faded = estimated
+    </div>
+  </div>
+
+  <div style="min-width:175px;flex:1;">
+    <div style="background:var(--color-background-secondary);border:0.5px solid var(--color-border-tertiary);border-radius:8px;padding:10px 12px;font-size:12px;color:var(--color-text-secondary);line-height:1.7;margin-bottom:10px;" id="infobox">
+      The 10x10 Bayer mosaic. Each pixel captures only ONE colour. Click any pixel to inspect it.
+    </div>
+    <div id="inspectbox" style="background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);border-radius:8px;padding:10px 12px;font-size:12px;color:var(--color-text-primary);display:none;">
+      <div style="font-size:11px;color:var(--color-text-secondary);margin-bottom:4px;">Selected pixel</div>
+      <div id="inspect-pos" style="font-weight:500;margin-bottom:4px;"></div>
+      <div id="inspect-raw"></div>
+      <div id="inspect-rgb" style="font-family:monospace;font-size:11px;margin-top:4px;"></div>
+      <div id="inspect-nb" style="font-size:11px;color:var(--color-text-secondary);margin-top:6px;"></div>
+    </div>
+    <div style="margin-top:10px;">
+      <div style="font-size:11px;color:var(--color-text-secondary);margin-bottom:4px;">Animation speed</div>
+      <input type="range" min="200" max="1400" value="700" step="100" id="speedslider" style="width:130px;">
+      <span style="font-size:11px;color:var(--color-text-secondary);" id="speedlabel">700ms</span>
+    </div>
+  </div>
+</div>
+
+<div style="margin-top:14px;border-top:0.5px solid var(--color-border-tertiary);padding-top:10px;font-size:11px;color:var(--color-text-secondary);">
+  Pipeline: &nbsp;
+  <span style="background:#fecaca;color:#7f1d1d;padding:1px 7px;border-radius:10px;">RAW</span> →
+  <span style="background:#bbf7d0;color:#14532d;padding:1px 7px;border-radius:10px;">separate</span> →
+  <span style="background:#bfdbfe;color:#1e3a5f;padding:1px 7px;border-radius:10px;">interpolate all 3</span> →
+  <span style="background:#e9d5ff;color:#4c1d95;padding:1px 7px;border-radius:10px;">RGB merge</span>
+</div>
+</div>
+
+<script>
+var N=10, mode=0, animTimer=null, selectedPx=null;
+var rawR=[],rawG=[],rawB=[],fullR=[],fullG=[],fullB=[];
+
+function bayerCh(r,c){return ['R','G','G','B'][(r%2)*2+(c%2)];}
+function randv(lo,hi){return Math.round(lo+Math.random()*(hi-lo));}
+
+for(var r=0;r<N;r++){
+  rawR.push([]);rawG.push([]);rawB.push([]);
+  fullR.push([]);fullG.push([]);fullB.push([]);
+  for(var c=0;c<N;c++){
+    var ch=bayerCh(r,c);
+    rawR[r].push(ch==='R'?randv(120,240):null);
+    rawG[r].push(ch==='G'?randv(100,220):null);
+    rawB[r].push(ch==='B'?randv(80,200):null);
+    fullR[r].push(0);fullG[r].push(0);fullB[r].push(0);
+  }
+}
+
+function interpCh(raw,full){
+  for(var r=0;r<N;r++) for(var c=0;c<N;c++){
+    if(raw[r][c]!==null){full[r][c]=raw[r][c];continue;}
+    var s=0,n=0;
+    var d4=[[-1,0],[1,0],[0,-1],[0,1]];
+    for(var d=0;d<4;d++){var nr=r+d4[d][0],nc=c+d4[d][1];if(nr>=0&&nr<N&&nc>=0&&nc<N&&raw[nr][nc]!==null){s+=raw[nr][nc];n++;}}
+    if(!n){var d8=[[-1,-1],[-1,1],[1,-1],[1,1]];for(var d=0;d<4;d++){var nr=r+d8[d][0],nc=c+d8[d][1];if(nr>=0&&nr<N&&nc>=0&&nc<N&&raw[nr][nc]!==null){s+=raw[nr][nc];n++;}}}
+    full[r][c]=n?Math.round(s/n):128;
+  }
+}
+interpCh(rawR,fullR); interpCh(rawG,fullG); interpCh(rawB,fullB);
+
+var infos=[
+  'Bayer RAW — each pixel records only its filter colour (R, G, or B). The RGGB 2x2 tile repeats across the 10x10 sensor.',
+  'Red channel — dark red = original sensor value. Pale pink = missing (75% of pixels). Only pixels with R filters have data.',
+  'Green channel — dark green = original. Pale = missing (50% of pixels). Green is sampled most due to human eye sensitivity.',
+  'Blue channel — dark blue = original. Pale = missing (75% of pixels). Only B-filter pixels have data.',
+  'Interpolated — every pixel now shows all 3 channel values (R / G / B). Bold = original sensor reading. Faded = estimated from neighbours via bilinear interpolation.',
+  'Final RGB — all three channels merged into one colour per pixel. This is what your display renders.'
+];
+var labels=[
+  'Bayer RAW — one colour filter per pixel',
+  'Red channel — 25% known, 75% estimated',
+  'Green channel — 50% known, 50% estimated',
+  'Blue channel — 25% known, 75% estimated',
+  'Interpolated — all 3 channel values per pixel',
+  'RGB result — 10x10 full colour image'
+];
+
+function buildGrid(){
+  var g=document.getElementById('maingrid');
+  g.innerHTML='';
+  for(var r=0;r<N;r++) for(var c=0;c<N;c++){
+    (function(rr,cc){
+      var d=document.createElement('div');
+      d.className='pxcell';
+      if(selectedPx&&selectedPx[0]===rr&&selectedPx[1]===cc) d.classList.add('selected');
+      var ch=bayerCh(rr,cc);
+      var rv=fullR[rr][cc],gv=fullG[rr][cc],bv=fullB[rr][cc];
+
+      if(mode===0){
+        var bg=ch==='R'?'#b91c1c':ch==='G'?'#15803d':'#1d4ed8';
+        d.style.background=bg; d.style.color='#fff';
+        var t=document.createElement('div'); t.className='cv'; t.style.fontSize='13px'; t.textContent=ch; d.appendChild(t);
+      } else if(mode===1){
+        var known=rawR[rr][cc]!==null;
+        d.style.background=known?'rgb('+rawR[rr][cc]+',0,0)':'#fecaca';
+        d.style.color=known?'#fff':'#991b1b';
+        var t=document.createElement('div'); t.className='cv'; t.textContent=known?rawR[rr][cc]:''; d.appendChild(t);
+      } else if(mode===2){
+        var known=rawG[rr][cc]!==null;
+        d.style.background=known?'rgb(0,'+rawG[rr][cc]+',0)':'#bbf7d0';
+        d.style.color=known?'#fff':'#14532d';
+        var t=document.createElement('div'); t.className='cv'; t.textContent=known?rawG[rr][cc]:''; d.appendChild(t);
+      } else if(mode===3){
+        var known=rawB[rr][cc]!==null;
+        d.style.background=known?'rgb(0,0,'+rawB[rr][cc]+')':'#bfdbfe';
+        d.style.color=known?'#fff':'#1e3a5f';
+        var t=document.createElement('div'); t.className='cv'; t.textContent=known?rawB[rr][cc]:''; d.appendChild(t);
+      } else if(mode===4){
+        var knownR=rawR[rr][cc]!==null, knownG=rawG[rr][cc]!==null, knownB=rawB[rr][cc]!==null;
+        d.style.background='rgb('+rv+','+gv+','+bv+')';
+        var br=rv*0.299+gv*0.587+bv*0.114;
+        var baseCol=br>130?'rgba(0,0,0,0.85)':'rgba(255,255,255,0.95)';
+
+        var rspan=document.createElement('div'); rspan.className='cv';
+        rspan.innerHTML='<span style="color:'+(knownR?'#ff9999':'#ffcccc')+';font-weight:'+(knownR?'700':'400')+'">R:'+rv+'</span>';
+        var gspan=document.createElement('div'); gspan.className='cv';
+        gspan.innerHTML='<span style="color:'+(knownG?'#88ffaa':'#bbffcc')+';font-weight:'+(knownG?'700':'400')+'">G:'+gv+'</span>';
+        var bspan=document.createElement('div'); bspan.className='cv';
+        bspan.innerHTML='<span style="color:'+(knownB?'#88ccff':'#bbddff')+';font-weight:'+(knownB?'700':'400')+'">B:'+bv+'</span>';
+        d.appendChild(rspan); d.appendChild(gspan); d.appendChild(bspan);
+      } else if(mode===5){
+        d.style.background='rgb('+rv+','+gv+','+bv+')';
+        d.style.color='';
+      }
+
+      d.onclick=function(){selectPixel(rr,cc);};
+      g.appendChild(d);
+    })(r,c);
+  }
+}
+
+function selectPixel(r,c){
+  selectedPx=[r,c]; buildGrid();
+  var ch=bayerCh(r,c);
+  var rv=fullR[r][c],gv=fullG[r][c],bv=fullB[r][c];
+  var rraw=rawR[r][c],graw=rawG[r][c],braw=rawB[r][c];
+  document.getElementById('inspectbox').style.display='block';
+  document.getElementById('inspect-pos').textContent='Row '+r+', Col '+c+' · filter: '+ch;
+  document.getElementById('inspect-raw').innerHTML=
+    '<span style="color:#ff6b6b">R: '+(rraw!==null?'<b>'+rraw+'</b> (sensor)':'<i>'+rv+' (estimated)</i>')+'</span><br>'+
+    '<span style="color:#6bcb77">G: '+(graw!==null?'<b>'+graw+'</b> (sensor)':'<i>'+gv+' (estimated)</i>')+'</span><br>'+
+    '<span style="color:#74b3f7">B: '+(braw!==null?'<b>'+braw+'</b> (sensor)':'<i>'+bv+' (estimated)</i>')+'</span>';
+  document.getElementById('inspect-rgb').textContent='→ rgb('+rv+', '+gv+', '+bv+')';
+  var dirs=[[-1,0,'above'],[1,0,'below'],[0,-1,'left'],[0,1,'right']];
+  var nb=[];
+  for(var d=0;d<4;d++){var nr=r+dirs[d][0],nc=c+dirs[d][1];if(nr>=0&&nr<N&&nc>=0&&nc<N)nb.push(bayerCh(nr,nc)+'('+nr+','+nc+')');}
+  document.getElementById('inspect-nb').textContent='Neighbours: '+nb.join(', ');
+}
+
+function setMode(m){
+  mode=m;
+  if(animTimer){clearInterval(animTimer);animTimer=null;document.getElementById('mb6').textContent='▶ Animate';}
+  for(var i=0;i<7;i++) document.getElementById('mb'+i).classList.toggle('on',i===m);
+  document.getElementById('infobox').textContent=infos[m];
+  document.getElementById('gridlabel').textContent=labels[m];
+  document.getElementById('legend').style.display=m===0?'flex':'none';
+  document.getElementById('interp-legend').style.display=m===4?'block':'none';
+  buildGrid();
+}
+
+function startAnim(){
+  if(animTimer){clearInterval(animTimer);animTimer=null;document.getElementById('mb6').textContent='▶ Animate';return;}
+  document.getElementById('mb6').textContent='⏹ Stop';
+  var s=0; setMode(0);
+  var spd=parseInt(document.getElementById('speedslider').value);
+  animTimer=setInterval(function(){
+    s=(s+1)%6; setMode(s);
+    if(s===5){clearInterval(animTimer);animTimer=null;document.getElementById('mb6').textContent='▶ Animate';}
+  },spd);
+}
+
+document.getElementById('speedslider').oninput=function(){document.getElementById('speedlabel').textContent=this.value+'ms';};
+buildGrid();
+</script>

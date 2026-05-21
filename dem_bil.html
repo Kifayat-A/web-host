@@ -1,0 +1,308 @@
+
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: var(--font-sans); color: var(--color-text-primary); }
+  .wrap { padding: 1.5rem 0; }
+  .grid-row { display: flex; gap: 8px; align-items: center; justify-content: center; flex-wrap: wrap; }
+  .panel { background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-lg); padding: 16px; }
+  .panel-title { font-size: 13px; font-weight: 500; color: var(--color-text-secondary); margin-bottom: 10px; text-align: center; }
+  canvas { display: block; image-rendering: pixelated; border-radius: 6px; }
+  .formula-box { background: var(--color-background-secondary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 10px 14px; font-size: 13px; line-height: 1.6; min-height: 64px; transition: all 0.3s ease; }
+  .formula-box .label { font-size: 11px; font-weight: 500; color: var(--color-text-tertiary); margin-bottom: 4px; }
+  .formula-box .eq { font-family: var(--font-mono); font-size: 13px; color: var(--color-text-primary); }
+  .eq span.hi { background: var(--color-background-warning); color: var(--color-text-warning); border-radius: 3px; padding: 0 3px; }
+  .eq span.r { color: #D85A30; font-weight: 500; }
+  .eq span.g { color: #1D9E75; font-weight: 500; }
+  .eq span.b { color: #378ADD; font-weight: 500; }
+  .legend { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; font-size: 12px; color: var(--color-text-secondary); }
+  .legend-item { display: flex; align-items: center; gap: 5px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; }
+  .pixel-info { font-size: 12px; color: var(--color-text-secondary); text-align: center; margin-top: 8px; min-height: 18px; }
+  h2.sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
+  .controls { display: flex; align-items: center; gap: 10px; justify-content: center; margin-top: 14px; font-size: 13px; color: var(--color-text-secondary); }
+  select { font-size: 13px; padding: 4px 8px; }
+  .step-label { font-size: 12px; text-align: center; color: var(--color-text-tertiary); margin-top: 6px; }
+</style>
+<div class="wrap">
+  <h2 class="sr-only">Interactive bilinear interpolation demo showing how missing color values are estimated in a Bayer filter mosaic.</h2>
+
+  <div style="display:flex;flex-direction:column;gap:14px;">
+
+    <!-- Top: Bayer raw + hovered pixel info -->
+    <div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center;">
+      <div class="panel" style="flex:0 0 auto;">
+        <div class="panel-title">Raw Bayer mosaic — hover to inspect</div>
+        <canvas id="c-bayer" width="240" height="240" style="width:240px;height:240px;cursor:crosshair"></canvas>
+        <div class="pixel-info" id="hover-info">Hover over a pixel to see its formula</div>
+      </div>
+      <div class="panel" style="flex:0 0 auto;">
+        <div class="panel-title">After demosaicing (bilinear)</div>
+        <canvas id="c-out" width="240" height="240" style="width:240px;height:240px;"></canvas>
+      </div>
+    </div>
+
+    <!-- Formula display -->
+    <div class="panel" style="max-width:540px;margin:0 auto;width:100%;">
+      <div class="formula-box" id="formula-box">
+        <div class="label">Formula</div>
+        <div class="eq" id="formula-eq">Hover a pixel in the Bayer mosaic to see how its missing channels are estimated.</div>
+      </div>
+    </div>
+
+    <!-- Legend -->
+    <div style="max-width:540px;margin:0 auto;width:100%;">
+      <div class="legend">
+        <div class="legend-item"><div class="dot" style="background:#E05030"></div><span>Red pixel (known R)</span></div>
+        <div class="legend-item"><div class="dot" style="background:#20A060"></div><span>Green pixel (known G)</span></div>
+        <div class="legend-item"><div class="dot" style="background:#2060D0"></div><span>Blue pixel (known B)</span></div>
+        <div class="legend-item"><div class="dot" style="background:#888;border:2px solid gold"></div><span>Selected pixel</span></div>
+      </div>
+    </div>
+
+    <!-- Pattern selector -->
+    <div class="controls">
+      <span>Bayer pattern:</span>
+      <select id="pattern-sel">
+        <option value="RGGB">RGGB</option>
+        <option value="BGGR">BGGR</option>
+        <option value="GRBG">GRBG</option>
+        <option value="GBRG">GBRG</option>
+      </select>
+    </div>
+
+  </div>
+</div>
+
+<script>
+const N = 6;
+const CELL = 40;
+
+// Fake sensor data: random raw values per pixel (each pixel only has ONE channel in reality)
+const rawR = [], rawG = [], rawB = [];
+for (let y = 0; y < N; y++) {
+  rawR.push([]); rawG.push([]); rawB.push([]);
+  for (let x = 0; x < N; x++) {
+    rawR[y].push(80 + Math.round(Math.random()*120));
+    rawG[y].push(60 + Math.round(Math.random()*140));
+    rawB[y].push(80 + Math.round(Math.random()*120));
+  }
+}
+
+// Which channel each pixel measures given pattern
+function bayerChannel(x, y, pattern) {
+  const even = (y % 2 === 0), evenX = (x % 2 === 0);
+  const combos = {
+    RGGB: [[even&&evenX?'R':'G', even&&!evenX?'G':'B'][0]],
+    BGGR: [[even&&evenX?'B':'G', even&&!evenX?'G':'R'][0]],
+    GRBG: [[even&&evenX?'G':'R', even&&!evenX?'B':'G'][0]],
+    GBRG: [[even&&evenX?'G':'B', even&&!evenX?'R':'G'][0]],
+  };
+  const pat = pattern;
+  if (pat === 'RGGB') {
+    if (even && evenX) return 'R';
+    if (even && !evenX) return 'G';
+    if (!even && evenX) return 'G';
+    return 'B';
+  }
+  if (pat === 'BGGR') {
+    if (even && evenX) return 'B';
+    if (even && !evenX) return 'G';
+    if (!even && evenX) return 'G';
+    return 'R';
+  }
+  if (pat === 'GRBG') {
+    if (even && evenX) return 'G';
+    if (even && !evenX) return 'R';
+    if (!even && evenX) return 'B';
+    return 'G';
+  }
+  if (pat === 'GBRG') {
+    if (even && evenX) return 'G';
+    if (even && !evenX) return 'B';
+    if (!even && evenX) return 'R';
+    return 'G';
+  }
+  return 'G';
+}
+
+// Get raw measured value at pixel
+function rawVal(x, y, ch) {
+  const src = { R: rawR, G: rawG, B: rawB }[ch];
+  return src[Math.max(0,Math.min(N-1,y))][Math.max(0,Math.min(N-1,x))];
+}
+
+// Bilinear interpolation: get estimated value of channel ch at (x,y)
+// where pixelCh is the known channel at (x,y)
+function bilinear(x, y, ch, pattern) {
+  const own = bayerChannel(x, y, pattern);
+  if (own === ch) return rawVal(x, y, ch);
+
+  // find neighbors of same channel type
+  const neighbors = [];
+  for (let dy = -2; dy <= 2; dy++) {
+    for (let dx = -2; dx <= 2; dx++) {
+      if (dx === 0 && dy === 0) continue;
+      const nx = x+dx, ny = y+dy;
+      if (nx<0||ny<0||nx>=N||ny>=N) continue;
+      if (bayerChannel(nx, ny, pattern) === ch) {
+        const dist = Math.abs(dx) + Math.abs(dy);
+        if (dist <= 2) neighbors.push({ nx, ny, dx, dy, dist });
+      }
+    }
+  }
+  // keep only closest (dist 1 or 2)
+  const minDist = Math.min(...neighbors.map(n => n.dist));
+  const close = neighbors.filter(n => n.dist === minDist);
+  if (close.length === 0) return rawVal(x, y, ch);
+  const sum = close.reduce((a,n) => a + rawVal(n.nx, n.ny, ch), 0);
+  return Math.round(sum / close.length);
+}
+
+// Build formula string for a given pixel
+function buildFormula(x, y, pattern, hovered) {
+  const own = bayerChannel(x, y, pattern);
+  const colorClass = { R:'r', G:'g', B:'b' };
+  const colorName = { R:'Red', G:'Green', B:'Blue' };
+  const missingChs = ['R','G','B'].filter(c => c !== own);
+
+  let html = `<div class="label">Pixel (col ${x+1}, row ${y+1}) — known channel: <span class="${colorClass[own]}">${colorName[own]}</span></div>`;
+  html += `<div class="eq">`;
+
+  // Known channel
+  html += `<span class="${colorClass[own]}">${own} = ${rawVal(x,y,own)}</span> (measured directly)<br>`;
+
+  // Each missing channel
+  for (const ch of missingChs) {
+    const neighbors = [];
+    for (let dy = -2; dy <= 2; dy++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        const nx = x+dx, ny = y+dy;
+        if (nx<0||ny<0||nx>=N||ny>=N) continue;
+        if (bayerChannel(nx, ny, pattern) === ch) {
+          const dist = Math.abs(dx) + Math.abs(dy);
+          if (dist <= 2) neighbors.push({ nx, ny, dist });
+        }
+      }
+    }
+    const minDist = Math.min(...neighbors.map(n => n.dist));
+    const close = neighbors.filter(n => n.dist === minDist);
+    const vals = close.map(n => rawVal(n.nx, n.ny, ch));
+    const avg = Math.round(vals.reduce((a,b)=>a+b,0)/vals.length);
+    const valsStr = vals.map(v=>`<span class="hi">${v}</span>`).join(' + ');
+    const denom = vals.length > 1 ? ` ) / ${vals.length}` : ` )`;
+    html += `<span class="${colorClass[ch]}">${ch}</span> = ( ${valsStr}${denom} = <b>${avg}</b><br>`;
+  }
+
+  html += `</div>`;
+  return html;
+}
+
+function getPattern() {
+  return document.getElementById('pattern-sel').value;
+}
+
+function drawBayer(hx, hy) {
+  const pat = getPattern();
+  const canvas = document.getElementById('c-bayer');
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0,0,240,240);
+
+  const colMap = { R:'#E05030', G:'#20A060', B:'#2060D0' };
+  const bgMap = { R:'rgba(224,80,48,0.13)', G:'rgba(32,160,96,0.13)', B:'rgba(32,96,208,0.13)' };
+
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const ch = bayerChannel(x, y, pat);
+      const px = x * CELL, py = y * CELL;
+      const isHov = (x === hx && y === hy);
+
+      // Background tint
+      ctx.fillStyle = bgMap[ch];
+      ctx.beginPath(); ctx.roundRect(px+2, py+2, CELL-4, CELL-4, 4);
+      ctx.fill();
+
+      // Colored dot
+      ctx.fillStyle = colMap[ch];
+      ctx.beginPath();
+      ctx.arc(px + CELL/2, py + CELL/2, isHov ? 13 : 9, 0, Math.PI*2);
+      ctx.fill();
+
+      if (isHov) {
+        ctx.strokeStyle = 'gold';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.roundRect(px+2, py+2, CELL-4, CELL-4, 6); ctx.stroke();
+      }
+
+      // Channel label
+      ctx.fillStyle = '#fff';
+      ctx.font = `${isHov?'500 ':' '}12px sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(ch, px + CELL/2, py + CELL/2);
+
+      // Raw value label below
+      ctx.fillStyle = 'var(--s, #888)';
+      ctx.font = '10px sans-serif';
+      ctx.fillText(rawVal(x, y, ch), px + CELL/2, py + CELL - 7);
+    }
+  }
+}
+
+function drawOutput() {
+  const pat = getPattern();
+  const canvas = document.getElementById('c-out');
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0,0,240,240);
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const r = bilinear(x, y, 'R', pat);
+      const g = bilinear(x, y, 'G', pat);
+      const b = bilinear(x, y, 'B', pat);
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      const px = x*CELL, py = y*CELL;
+      ctx.beginPath(); ctx.roundRect(px+2, py+2, CELL-4, CELL-4, 4); ctx.fill();
+
+      // Show RGB text
+      ctx.fillStyle = '#fff';
+      ctx.font = '8px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(`${r},${g},${b}`, px + CELL/2, py + CELL/2);
+    }
+  }
+}
+
+let hovX = -1, hovY = -1;
+
+document.getElementById('c-bayer').addEventListener('mousemove', function(e) {
+  const rect = this.getBoundingClientRect();
+  const scaleX = 240 / rect.width, scaleY = 240 / rect.height;
+  const cx = Math.floor((e.clientX - rect.left) * scaleX / CELL);
+  const cy = Math.floor((e.clientY - rect.top) * scaleY / CELL);
+  if (cx < 0 || cy < 0 || cx >= N || cy >= N) return;
+  if (cx === hovX && cy === hovY) return;
+  hovX = cx; hovY = cy;
+  drawBayer(cx, cy);
+  document.getElementById('formula-box').innerHTML = buildFormula(cx, cy, getPattern());
+  const ch = bayerChannel(cx, cy, getPattern());
+  const chName = {R:'Red',G:'Green',B:'Blue'}[ch];
+  document.getElementById('hover-info').textContent = `Pixel (${cx+1},${cy+1}) — measured: ${chName}`;
+});
+
+document.getElementById('c-bayer').addEventListener('mouseleave', function() {
+  hovX = -1; hovY = -1;
+  drawBayer(-1,-1);
+  document.getElementById('formula-box').innerHTML = '<div class="label">Formula</div><div class="eq">Hover a pixel in the Bayer mosaic to see how its missing channels are estimated.</div>';
+  document.getElementById('hover-info').textContent = 'Hover over a pixel to see its formula';
+});
+
+document.getElementById('pattern-sel').addEventListener('change', function() {
+  drawBayer(hovX, hovY);
+  drawOutput();
+  if (hovX >= 0) {
+    document.getElementById('formula-box').innerHTML = buildFormula(hovX, hovY, getPattern());
+  }
+});
+
+drawBayer(-1,-1);
+drawOutput();
+</script>
